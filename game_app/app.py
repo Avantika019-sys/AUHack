@@ -37,11 +37,11 @@ FEATURES = [
 ]
 
 UNIT_PRICES = {
-    "Solar Unit": 40,
-    "Wind Unit": 60,
-    "Battery Unit": 80,
-    "Hydro Unit": 100,
+    "1 MWh Electricity": 10,
+    "5 MWh Electricity": 30,
+    "10 MWh Electricity": 150,
 }
+
 
 QUESTION_BANK = [
     "What is the model forecast for {country} at {time}?",
@@ -54,16 +54,6 @@ QUESTION_BANK = [
     "Pick the best forecast for {country} at {time}.",
     "Which price matches the model continuation for {country} at {time}?",
     "Guess the most likely spot price for {country} at {time}.",
-    "Choose the forecasted market price for {country} at {time}.",
-    "What should the model predict for {country} at {time}?",
-    "Select the closest future price for {country} at {time}.",
-    "Which answer is nearest the forecast for {country} at {time}?",
-    "At {time}, the model suggests what price for {country}?",
-    "What is the expected spot price for {country} at {time}?",
-    "Choose the machine-learning estimate for {country} at {time}.",
-    "Find the best forecasted value for {country} at {time}.",
-    "Which option is the model's predicted price for {country} at {time}?",
-    "Identify the closest forecast point for {country} at {time}.",
 ]
 
 # =========================================================
@@ -200,6 +190,7 @@ def get_portfolio(username):
 def load_country_data():
     files = glob.glob(os.path.join(DATASETS_DIR, "*-spot-price.csv"))
     data = {}
+
     for file_path in files:
         country = os.path.basename(file_path).split("-")[0]
         df = pd.read_csv(file_path)
@@ -207,6 +198,7 @@ def load_country_data():
         df = df.rename(columns={"value (EUR/MWh)": "price"})
         df = df.sort_values("time").reset_index(drop=True)
         data[country] = df
+
     return data
 
 
@@ -287,7 +279,7 @@ def build_question_options(true_value):
     return options
 
 
-def build_questions(country, future_df, count=5):
+def build_questions(country, future_df, count=3):
     step = max(1, len(future_df) // (count + 1))
     templates = random.sample(QUESTION_BANK, count)
 
@@ -301,7 +293,10 @@ def build_questions(country, future_df, count=5):
             "time_label": ts.strftime("%Y-%m-%d %H:%M"),
             "correct": float(row["predicted_price"]),
             "options": build_question_options(float(row["predicted_price"])),
-            "prompt": templates[i].format(country=country, time=ts.strftime("%Y-%m-%d %H:%M")),
+            "prompt": templates[i].format(
+                country=country,
+                time=ts.strftime("%Y-%m-%d %H:%M")
+            ),
         })
     return questions
 
@@ -311,14 +306,15 @@ def build_questions(country, future_df, count=5):
 
 init_db()
 
-for key, default in {
+defaults = {
     "username": "",
-    "wheel_country": None,
     "questions": [],
     "quiz_submitted": False,
     "quiz_score": 0,
-    "show_name_input": False,
-}.items():
+    "challenge_country": None,
+}
+
+for key, default in defaults.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
@@ -333,7 +329,7 @@ countries = sorted(data.keys())
 # HEADER + DASHBOARD
 # =========================================================
 
-st.title("⚡ Spot Price Game")
+st.title("Spot Price Game")
 
 top1, top2 = st.columns([1.5, 1])
 with top1:
@@ -362,26 +358,21 @@ dashboard_chart = pd.DataFrame({
 st.line_chart(dashboard_chart, height=360)
 
 # =========================================================
-# MAIN TABS
+# TABS
 # =========================================================
 
-challenge_tab, reward_tab = st.tabs(["Challenge", "Reward Shop"])
+challenge_tab, reward_tab = st.tabs(["Daily Challenge", "Reward Shop"])
+
+# =========================================================
+# DAILY CHALLENGE
+# =========================================================
 
 with challenge_tab:
-    st.subheader("🎡 Spin Wheel Challenge")
-    st.write("Click spin first. After that, you will be asked to enter your name.")
+    st.subheader("Daily Spot Price Challenge")
+    st.write("Answer today's 3 questions about predicted spot prices.")
 
-    if st.button("Spin the wheel", type="primary"):
-        st.session_state.show_name_input = True
-        st.session_state.wheel_country = random.choice(countries)
-        st.balloons()
-
-    if st.session_state.show_name_input:
-        username = st.text_input("Enter your name to continue", value=st.session_state.username)
-        st.session_state.username = username.strip()
-
-    if st.session_state.wheel_country:
-        st.success(f"Wheel result: {st.session_state.wheel_country}")
+    username = st.text_input("Enter your name to continue", value=st.session_state.username)
+    st.session_state.username = username.strip()
 
     if st.session_state.username:
         today = get_today_str()
@@ -390,30 +381,46 @@ with challenge_tab:
 
         st.metric("Your coins", get_coins(st.session_state.username))
 
+        challenge_country = st.selectbox(
+            "Challenge country",
+            countries,
+            index=0,
+            key="daily_challenge_country_select"
+        )
+
+        if st.session_state.challenge_country != challenge_country:
+            st.session_state.challenge_country = challenge_country
+            st.session_state.questions = []
+            st.session_state.quiz_submitted = False
+            st.session_state.quiz_score = 0
+
         if already_played:
             st.info("You already completed today's challenge. Come back tomorrow.")
-        elif st.session_state.wheel_country:
-            quiz_country = st.session_state.wheel_country
-            quiz_df = data[quiz_country]
-            quiz_model, _, _ = train_model(quiz_country, quiz_df)
-            quiz_future = recursive_forecast(quiz_model, quiz_df, steps=72)
+        else:
+            quiz_df = data[challenge_country]
+            quiz_model, _, _ = train_model(challenge_country, quiz_df)
+            quiz_future = recursive_forecast(quiz_model, quiz_df, steps=48)
 
             if not st.session_state.questions:
-                st.session_state.questions = build_questions(quiz_country, quiz_future, count=5)
+                st.session_state.questions = build_questions(
+                    challenge_country,
+                    quiz_future,
+                    count=3
+                )
 
             answers = []
             for i, q in enumerate(st.session_state.questions):
-                st.markdown(f"**Question {i+1}**")
+                st.markdown(f"**Question {i + 1}**")
                 st.write(q["prompt"])
                 answer = st.radio(
-                    f"Answer {i+1}",
+                    f"Answer {i + 1}",
                     q["options"],
                     horizontal=True,
                     key=f"question_{i}"
                 )
                 answers.append(float(answer))
 
-            if st.button("Submit all answers"):
+            if st.button("Submit all answers", type="primary"):
                 score = 0
                 for answer, q in zip(answers, st.session_state.questions):
                     best = min(q["options"], key=lambda x: abs(x - q["correct"]))
@@ -426,11 +433,10 @@ with challenge_tab:
                 set_last_play_date(st.session_state.username, today)
                 st.balloons()
 
-        if st.session_state.quiz_submitted and st.session_state.wheel_country:
-            reveal_country = st.session_state.wheel_country
-            reveal_df = data[reveal_country]
-            reveal_model, _, _ = train_model(reveal_country, reveal_df)
-            reveal_future = recursive_forecast(reveal_model, reveal_df, steps=48)
+        if st.session_state.quiz_submitted:
+            reveal_df = data[challenge_country]
+            reveal_model, _, _ = train_model(challenge_country, reveal_df)
+            reveal_future = recursive_forecast(reveal_model, reveal_df, steps=24)
 
             c1, c2 = st.columns(2)
             c1.metric("Points earned today", st.session_state.quiz_score)
@@ -457,16 +463,27 @@ with challenge_tab:
 
             with st.expander("Show correct answers"):
                 for i, q in enumerate(st.session_state.questions):
-                    st.write(f"Q{i+1}: {q['time_label']} → {q['correct']:.1f} EUR/MWh")
+                    st.write(f"Q{i + 1}: {q['time_label']} → {q['correct']:.1f} EUR/MWh")
+    else:
+        st.info("Enter your name to start today's challenge.")
+
+# =========================================================
+# REWARD SHOP
+# =========================================================
 
 with reward_tab:
     st.subheader("Reward Shop")
     st.write("Spend your points on units in the countries you believe will increase.")
 
-    shop_username = st.text_input("Player name", value=st.session_state.username, key="shop_name")
+    shop_username = st.text_input(
+        "Player name",
+        value=st.session_state.username,
+        key="shop_name"
+    )
 
     if shop_username.strip():
-        coins = get_coins(shop_username.strip())
+        clean_name = shop_username.strip()
+        coins = get_coins(clean_name)
         st.metric("Available coins", coins)
 
         c1, c2, c3 = st.columns(3)
@@ -479,14 +496,14 @@ with reward_tab:
             st.metric("Unit cost", f"{unit_cost} coins")
 
         if st.button("Buy unit"):
-            if spend_coins(shop_username.strip(), unit_cost):
-                add_portfolio_item(shop_username.strip(), buy_country, buy_unit, unit_cost)
+            if spend_coins(clean_name, unit_cost):
+                add_portfolio_item(clean_name, buy_country, buy_unit, unit_cost)
                 st.success(f"Bought 1 {buy_unit} for {buy_country}")
             else:
                 st.error("Not enough coins")
 
         st.markdown("### Owned units")
-        portfolio = get_portfolio(shop_username.strip())
+        portfolio = get_portfolio(clean_name)
         if len(portfolio):
             st.dataframe(portfolio, use_container_width=True)
         else:
